@@ -6,6 +6,8 @@ from typing import List
 
 import click
 
+from visualize import visualize
+
 
 @click.command()
 @click.argument('output_dir', type=click.Path(), default=lambda: os.getcwd())
@@ -32,7 +34,7 @@ def run(output_dir, input_dir):
     click.echo("\nConcatenating all output files ... ")
     concat_output_file_path = os.path.join(output_dir, "all_results")
     with open(concat_output_file_path + ".csv", 'w') as output_file:
-        csv_writer = csv.DictWriter(output_file, fieldnames=result2rdf.fieldnames)
+        csv_writer = csv.DictWriter(output_file, fieldnames=result2rdf.fieldnames, quoting=csv.QUOTE_NONNUMERIC)
         csv_writer.writeheader()
         for input_file_path in output_files:
             with open(input_file_path + ".csv", 'r') as input_file:
@@ -50,6 +52,9 @@ def run(output_dir, input_dir):
                                      sort_keys=True,
                                      indent=4
                                      ))
+    click.echo("Done\n")
+    click.echo("Generating plots ...")
+    visualize(os.path.join(output_dir, "all_results.json"), os.path.join(output_dir, "all_results.csv"))
     click.echo("Done")
 
 

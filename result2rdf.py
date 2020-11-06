@@ -6,14 +6,15 @@ from typing import List, Iterator
 import dateutil.parser
 import rdflib as rdf
 
-fieldnames = ["starttime", "benchmarkID", "format", "dataset", "triplestore", "noclients", "queryID", "qps", "penalizedQps",
+fieldnames = ["starttime", "benchmarkID", "format", "dataset", "triplestore", "noclients", "queryID", "qps",
+              "penalizedQps",
               "succeeded", "failed", "timeouts", "unknownExceptions", "wrongCodes", "totaltime", "resultsize",
               "penalizedtime"]
 
 
 class TaskMetaData:
     def __init__(self, benchmarkID: str, format: str, dataset: str, noclients: int, triplestore: str, starttime: str,
-                 runtime: float):
+                 runtime: float, QMPH: float, AvgQPS: float, NoQ: float, NoQPH: float):
         self.benchmarkID = str(benchmarkID)
         self.format = str(format)
         self.dataset = str(dataset)
@@ -21,6 +22,11 @@ class TaskMetaData:
         self.triplestore = str(triplestore)
         self.starttime = dateutil.parser.parse(starttime)
         self.runtime = float(runtime)
+        self.QMPH = float(QMPH)
+        self.AvgQPS = float(AvgQPS)
+        self.NoQ = float(NoQ)
+        self.NoQPH = float(NoQPH)
+        self.PenalizedAvgQPS = None
 
 
 def extract_meta_data(rdf_graph) -> List[TaskMetaData]:
@@ -29,7 +35,7 @@ def extract_meta_data(rdf_graph) -> List[TaskMetaData]:
             PREFIX iguana: <http://iguana-benchmark.eu/properties/>
             PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
             PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-            SELECT DISTINCT ?benchmarkID ?format ?dataset ?noclients ?triplestore ?starttime ?runtime WHERE
+            SELECT DISTINCT ?benchmarkID ?format ?dataset ?noclients ?triplestore ?starttime ?runtime ?QMPH ?AvgQPS ?NoQ ?NoQPH WHERE
             {
             ?benchmarkID rdf:type iguanac:Task .
             ?benchmarkID rdfs:startDate ?starttime .
@@ -47,6 +53,11 @@ def extract_meta_data(rdf_graph) -> List[TaskMetaData]:
             ?benchmarkID iguana:workerResult ?wr .
             ?wr iguana:workerType ?workerType .
             BIND( IF(CONTAINS(?workerType, "CLI"),"CLI","HTTP") AS ?format )
+            # metrics
+            ?benchmarkID iguana:QMPH ?QMPH ; 
+                         iguana:AvgQPS ?AvgQPS ; 
+                         iguana:NoQ ?NoQ ;
+                         iguana:NoQPH ?NoQPH .
             } '''
     ))
     return [TaskMetaData(**raw_task.asdict()) for raw_task in raw_tasks]
@@ -108,26 +119,19 @@ def convert_result_file(rdf_file: str, input_dir: str, output_dir: str) -> Itera
                                                               task_meta_data.starttime.strftime("%Y-%m-%d_%H-%M-%S"))
         os.makedirs(output_dir, exist_ok=True)
 
-        with open(os.path.join(output_dir, outputfile + ".json"), "w") as jsonfile:
-            jsonfile.write(json.dumps({'benchmarkID': task_meta_data.benchmarkID,
-                                       'starttime': str(task_meta_data.starttime),
-                                       'runtime': task_meta_data.runtime,
-                                       "format": task_meta_data.format,
-                                       'dataset': task_meta_data.dataset,
-                                       'noclients': task_meta_data.noclients,
-                                       'triplestore': task_meta_data.triplestore},
-                                      sort_keys=True,
-                                      indent=4),
-                           )
+        task_meta_data.PenalizedAvgQPS = 0
 
         output_csv = os.path.join(output_dir, outputfile + ".csv")
         with open(output_csv, 'w') as csvfile:
             csvwriter = csv.DictWriter(csvfile,
-                                       fieldnames=fieldnames)
+                                       fieldnames=fieldnames,
+                                       quoting=csv.QUOTE_NONNUMERIC)
             csvwriter.writeheader()
             for binding in sorted(list(query_results), key=lambda x: x.queryID):
                 # TODO: make penalty time configurable
                 penalty_time = 180000
+
+                task_meta_data.PenalizedAvgQPS += float(binding.penalizedQPS)
 
                 penalized_time = float(binding.totaltime)
                 if int(binding.failed) > 0 and float(binding.totaltime) < penalty_time * int(binding.failed):
@@ -142,7 +146,7 @@ def convert_result_file(rdf_file: str, input_dir: str, output_dir: str) -> Itera
                     "noclients": int(binding.noclients),
                     "queryID": binding.queryID,
                     "qps": binding.qps,
-                    "penalizedQps": binding.penalizedQPS,
+                    "penalizedQps": float(binding.penalizedQPS),
                     "succeeded": int(binding.succeeded),
                     "failed": int(binding.failed),
                     "wrongCodes": int(binding.wrongCodes),
@@ -152,4 +156,24 @@ def convert_result_file(rdf_file: str, input_dir: str, output_dir: str) -> Itera
                     "resultsize": int(binding["resultsize"]) if str(binding["resultsize"]) != '?' else '',
                     "penalizedtime": penalized_time
                 })
+        task_meta_data.PenalizedAvgQPS = task_meta_data.PenalizedAvgQPS / len(query_results) if task_meta_data.PenalizedAvgQPS > 0 else 0
+
+
+        with open(os.path.join(output_dir, outputfile + ".json"), "w") as jsonfile:
+            jsonfile.write(json.dumps({'benchmarkID': task_meta_data.benchmarkID,
+                                       'triplestore': task_meta_data.triplestore,
+                                       'dataset': task_meta_data.dataset,
+                                       'starttime': str(task_meta_data.starttime),
+                                       'runtime': task_meta_data.runtime,
+                                       "format": task_meta_data.format,
+                                       'noclients': task_meta_data.noclients,
+                                       'QMPH': task_meta_data.QMPH,
+                                       'AvgQPS': task_meta_data.AvgQPS,
+                                       'PenalizedAvgQPS': task_meta_data.PenalizedAvgQPS,
+                                       'NoQ': task_meta_data.NoQ,
+                                       'NoQPH': task_meta_data.NoQPH,
+                                       },
+                                      sort_keys=True,
+                                      indent=4),
+                           )
         yield os.path.join(output_dir, outputfile)
